@@ -1,0 +1,17 @@
+---
+profile: moderate
+exclude_paths:
+  - charts/
+  - kb/
+  - .github/
+# The playbook drives kubectl/helm through shell pipelines on purpose;
+# these rules would only add noise without changing behaviour.
+skip_list:
+  # Single-role project: user-facing settings keep short names (tls_mode,
+  # docker_token) instead of a nai_poc_ prefix.
+  - var-naming[no-role-prefix]
+  - command-instead-of-shell
+  - no-changed-when
+  - risky-shell-pipe
+  - name[template]
+  - yaml[line-length]

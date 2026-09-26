@@ -1,0 +1,58 @@
+---
+# Phases run in order. Re-run a subset with: ./deploy.sh install --tags nai,ingress
+
+- name: Phase 0 - Preflight checks
+  ansible.builtin.include_tasks:
+    file: 00_preflight.yml
+    apply:
+      tags: [preflight, always]
+  tags: [always]
+
+- name: Phase 1 - Prepare Ubuntu host and kernel
+  ansible.builtin.include_tasks:
+    file: 01_system.yml
+    apply:
+      tags: [system]
+  tags: [system]
+
+- name: Phase 2 - Bootstrap single-node RKE2 Kubernetes
+  ansible.builtin.include_tasks:
+    file: 02_k8s.yml
+    apply:
+      tags: [k8s]
+  tags: [k8s]
+
+- name: Phase 3 - Storage (local-path RWO, NFS RWX, optional MinIO S3)
+  ansible.builtin.include_tasks:
+    file: 03_storage.yml
+    apply:
+      tags: [storage]
+  tags: [storage]
+
+- name: Phase 4 - Prerequisite operators (cert-manager, CNPG, LWS, KServe, OTel, Envoy Gateway)
+  ansible.builtin.include_tasks:
+    file: 04_prerequisites.yml
+    apply:
+      tags: [prereqs]
+  tags: [prereqs]
+
+- name: Phase 5 - Ingest optional NAI image bundle
+  ansible.builtin.include_tasks:
+    file: 05_load_bundle.yml
+    apply:
+      tags: [bundle]
+  tags: [bundle]
+
+- name: Phase 6 - Deploy Nutanix Enterprise AI (operators, core, TLS)
+  ansible.builtin.include_tasks:
+    file: 06_deploy_nai.yml
+    apply:
+      tags: [nai]
+  tags: [nai]
+
+- name: Phase 7 - Local ingress and readiness checks
+  ansible.builtin.include_tasks:
+    file: 07_ingress_and_verify.yml
+    apply:
+      tags: [ingress]
+  tags: [ingress]

@@ -1,0 +1,139 @@
+---
+# =============================================================================
+# 06_deploy_nai.yml - NAI operators, NAI core and the Gateway TLS certificate
+#
+# TLS secret "{{ tls_secret_name }}" is what the Gateway HTTPS listener reads.
+#   provided    -> Secret written from local files before nai-core.
+#   letsencrypt -> Certificate (ClusterIssuer letsencrypt-prod) before nai-core.
+#   selfsigned  -> Certificate from Issuer "ca-issuer" AFTER nai-core, because
+#                  the nai-core chart itself creates that internal CA issuer.
+# =============================================================================
+
+- name: Create the NAI namespace
+  ansible.builtin.shell: |
+    kubectl create namespace {{ nai_namespace }} --dry-run=client -o yaml | kubectl apply -f -
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  register: ns_apply
+  changed_when: "'created' in ns_apply.stdout or 'configured' in ns_apply.stdout"
+
+# Switching TLS mode on an existing installation: re-running with another
+# tls_mode re-applies the Certificate with the new issuerRef (cert-manager
+# re-issues into the same Secret). For "provided", any cert-manager
+# Certificate owning that Secret must go first, or it would overwrite the
+# files loaded below.
+- name: Remove any cert-manager Certificate owning the TLS secret (provided mode)
+  when: tls_mode == 'provided'
+  ansible.builtin.command: kubectl delete certificate {{ tls_secret_name }} -n {{ nai_namespace }} --ignore-not-found
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  register: cert_cleanup
+  changed_when: "'deleted' in cert_cleanup.stdout"
+
+- name: Load the provided certificate and key into the TLS secret
+  when: tls_mode == 'provided'
+  no_log: true
+  ansible.builtin.command: kubectl apply -f -
+  args:
+    stdin: |
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: {{ tls_secret_name }}
+        namespace: {{ nai_namespace }}
+      type: kubernetes.io/tls
+      data:
+        tls.crt: {{ lookup('ansible.builtin.file', tls_cert_file) | b64encode }}
+        tls.key: {{ lookup('ansible.builtin.file', tls_key_file) | b64encode }}
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  register: tls_secret_apply
+  changed_when: "'created' in tls_secret_apply.stdout or 'configured' in tls_secret_apply.stdout"
+
+- name: Request a Let's Encrypt certificate for {{ nai_fqdn }}
+  when: tls_mode == 'letsencrypt'
+  ansible.builtin.command: kubectl apply -f -
+  args:
+    stdin: |
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: {{ tls_secret_name }}
+        namespace: {{ nai_namespace }}
+      spec:
+        secretName: {{ tls_secret_name }}
+        issuerRef:
+          name: letsencrypt-prod
+          kind: ClusterIssuer
+        dnsNames:
+          - "{{ nai_fqdn }}"
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  register: le_cert_apply
+  changed_when: "'created' in le_cert_apply.stdout or 'configured' in le_cert_apply.stdout"
+
+- name: Deploy NAI operators
+  ansible.builtin.shell: |
+    helm upgrade --install nai-operators {{ charts_dest }}/nai-operators-{{ nai_version }}.tgz \
+      --namespace {{ nai_namespace }} \
+      --set global.storage.storageClassName={{ storage_class_rwo }} \
+      --set global.storage.storageClassNameRWX={{ storage_class_rwx }} \
+      --set "global.imagePullSecrets[0].name={{ registry_secret_name }}" \
+      --set naiDatabase.clusters.iep.resources.requests.cpu=500m \
+      --set naiDatabase.clusters.iep.resources.requests.memory=1Gi \
+      --timeout 15m \
+      --wait
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+
+- name: Deploy NAI core
+  ansible.builtin.shell: |
+    helm upgrade --install nai-core {{ charts_dest }}/nai-core-{{ nai_version }}.tgz \
+      --namespace {{ nai_namespace }} \
+      --set global.storage.storageClassName={{ storage_class_rwo }} \
+      --set global.storage.storageClassNameRWX={{ storage_class_rwx }} \
+      --set "global.imagePullSecrets[0].name={{ registry_secret_name }}" \
+      --set naiApi.naiApiResources.requests.cpu=1 \
+      --set naiApi.naiApiResources.requests.memory=2Gi \
+      --set naiApi.naiMigrateJobResources.requests.cpu=200m \
+      --set naiApi.naiMigrateJobResources.requests.memory=256Mi \
+      --set naiInferenceUi.resources.requests.cpu=200m \
+      --set naiInferenceUi.resources.requests.memory=256Mi \
+      --set naiAgent.resources.requests.cpu=200m \
+      --set naiAgent.resources.requests.memory=512Mi \
+      --set nai-clickhouse-server.clickhouse.resources.requests.cpu=500m \
+      --set nai-clickhouse-server.clickhouse.resources.requests.memory=2Gi \
+      --set gateway.tlsSecretName={{ tls_secret_name }} \
+      --set gateway.envoyResources.requests.cpu=500m \
+      --set gateway.envoyResources.requests.memory=1Gi \
+      --timeout 20m \
+      --force-conflicts \
+      --wait
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+
+- name: Request a certificate from the NAI internal CA (VM IP in the SAN)
+  when: tls_mode == 'selfsigned'
+  ansible.builtin.command: kubectl apply -f -
+  args:
+    stdin: |
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: {{ tls_secret_name }}
+        namespace: {{ nai_namespace }}
+      spec:
+        secretName: {{ tls_secret_name }}
+        issuerRef:
+          name: ca-issuer
+          kind: Issuer
+        ipAddresses:
+          - "{{ nai_vm_ip }}"
+      {% if nai_fqdn != nai_vm_ip %}
+        dnsNames:
+          - "{{ nai_fqdn }}"
+      {% endif %}
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  register: ss_cert_apply
+  changed_when: "'created' in ss_cert_apply.stdout or 'configured' in ss_cert_apply.stdout"

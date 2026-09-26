@@ -1,0 +1,40 @@
+---
+name: CI
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  lint-and-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Shellcheck
+        run: shellcheck deploy.sh
+
+      - name: Install Ansible tooling
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install ansible-core ansible-lint yamllint
+          ansible-galaxy collection install -r requirements.yml
+
+      - name: yamllint
+        run: yamllint ansible/ requirements.yml .github/
+
+      # ansible-lint follows include_tasks, so a broken task file fails here
+      # even though --syntax-check alone would not notice it.
+      - name: ansible-lint
+        run: ansible-lint ansible/site.yml
+
+      - name: Playbook syntax check
+        env:
+          ANSIBLE_CONFIG: ansible/ansible.cfg
+        run: ansible-playbook -i inventory.example.ini --syntax-check ansible/site.yml

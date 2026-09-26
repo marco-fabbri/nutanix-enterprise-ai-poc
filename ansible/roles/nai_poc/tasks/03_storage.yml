@@ -1,0 +1,141 @@
+---
+# =============================================================================
+# 03_storage.yml - local-path (RWO), NFS subdir provisioner (RWX), MinIO (S3)
+# =============================================================================
+
+- name: Deploy local-path provisioner and make it the default StorageClass
+  ansible.builtin.shell: |
+    set -euo pipefail
+    kubectl apply -f https://raw.githubusercontent.com/rancher/local-path-provisioner/{{ local_path_provisioner_version }}/deploy/local-path-storage.yaml
+    kubectl annotate storageclass {{ storage_class_rwo }} storageclass.kubernetes.io/is-default-class="true" --overwrite
+  args:
+    executable: /bin/bash
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  register: local_path_apply
+  changed_when: "'created' in local_path_apply.stdout or 'configured' in local_path_apply.stdout"
+
+- name: Add the NFS subdir provisioner Helm repository
+  ansible.builtin.shell: |
+    helm repo add nfs-subdir-external-provisioner https://kubernetes-sigs.github.io/nfs-subdir-external-provisioner/
+    helm repo update nfs-subdir-external-provisioner
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  changed_when: false
+
+- name: Deploy the NFS subdir provisioner (RWX StorageClass {{ storage_class_rwx }})
+  ansible.builtin.shell: |
+    helm upgrade --install nfs-subdir-external-provisioner \
+      nfs-subdir-external-provisioner/nfs-subdir-external-provisioner \
+      --namespace kube-system \
+      --version {{ nfs_provisioner_chart_version }} \
+      --set nfs.server={{ nai_vm_ip }} \
+      --set nfs.path={{ nfs_export_path }} \
+      --set storageClass.name={{ storage_class_rwx }} \
+      --set storageClass.provisionerName=k8s-sigs.io/nfs-subdir-external-provisioner \
+      --wait
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+
+- name: Deploy MinIO (optional S3 service for model import)
+  when: deploy_minio | bool
+  block:
+    - name: Create MinIO namespace
+      ansible.builtin.shell: |
+        kubectl create namespace {{ minio_namespace }} --dry-run=client -o yaml | kubectl apply -f -
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      register: minio_ns_apply
+      changed_when: "'created' in minio_ns_apply.stdout or 'configured' in minio_ns_apply.stdout"
+
+    - name: Deploy MinIO standalone
+      no_log: true
+      ansible.builtin.command: kubectl apply -f -
+      args:
+        stdin: |
+          apiVersion: v1
+          kind: PersistentVolumeClaim
+          metadata:
+            name: minio-pvc
+            namespace: {{ minio_namespace }}
+          spec:
+            accessModes:
+              - ReadWriteOnce
+            storageClassName: {{ storage_class_rwo }}
+            resources:
+              requests:
+                storage: {{ minio_storage_size }}
+          ---
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: minio-root
+            namespace: {{ minio_namespace }}
+          type: Opaque
+          stringData:
+            MINIO_ROOT_USER: "{{ minio_root_user }}"
+            MINIO_ROOT_PASSWORD: "{{ minio_root_password }}"
+          ---
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: minio
+            namespace: {{ minio_namespace }}
+          spec:
+            selector:
+              matchLabels:
+                app: minio
+            strategy:
+              type: Recreate
+            template:
+              metadata:
+                labels:
+                  app: minio
+              spec:
+                securityContext:
+                  fsGroup: 1001
+                containers:
+                  - name: minio
+                    image: {{ minio_image }}
+                    envFrom:
+                      - secretRef:
+                          name: minio-root
+                    env:
+                      - name: MINIO_DATA_DIR
+                        value: /bitnami/minio/data
+                    ports:
+                      - containerPort: 9000
+                      - containerPort: 9001
+                    volumeMounts:
+                      - name: data
+                        mountPath: /bitnami/minio/data
+                volumes:
+                  - name: data
+                    persistentVolumeClaim:
+                      claimName: minio-pvc
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: minio
+            namespace: {{ minio_namespace }}
+          spec:
+            ports:
+              - port: 9000
+                targetPort: 9000
+                name: s3
+              - port: 9001
+                targetPort: 9001
+                name: console
+            selector:
+              app: minio
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      register: minio_apply
+      changed_when: "'created' in minio_apply.stdout or 'configured' in minio_apply.stdout"
+
+    - name: Wait for MinIO to become ready
+      ansible.builtin.command: kubectl rollout status deployment/minio -n {{ minio_namespace }} --timeout=180s
+      environment:
+        KUBECONFIG: "{{ kubeconfig }}"
+      changed_when: false

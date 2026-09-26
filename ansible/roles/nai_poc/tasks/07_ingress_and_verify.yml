@@ -1,0 +1,117 @@
+---
+# =============================================================================
+# 07_ingress_and_verify.yml - Local HAProxy and readiness checks
+#
+# The Envoy Gateway Service is ClusterIP only (no cloud load balancer on a
+# single VM). HAProxy on the VM forwards TCP 80/443 to it, so TLS is still
+# terminated by Envoy with the NAI certificate.
+# =============================================================================
+
+- name: Wait for the Envoy Gateway service and read its ClusterIP
+  ansible.builtin.shell: |
+    for i in $(seq 1 60); do
+      svc_ip=$(kubectl get svc -n envoy-gateway-system -l gateway.envoyproxy.io/owning-gateway-name=nai-ingress-gateway -o jsonpath='{.items[0].spec.clusterIP}' 2>/dev/null || true)
+      if [ -n "$svc_ip" ]; then
+        echo "$svc_ip"
+        exit 0
+      fi
+      sleep 5
+    done
+    echo "Timeout waiting for the Envoy Gateway service" >&2
+    exit 1
+  register: envoy_svc_clusterip
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  changed_when: false
+
+- name: Write the HAProxy configuration (TCP passthrough 80/443 to Envoy)
+  ansible.builtin.copy:
+    dest: /etc/haproxy/haproxy.cfg
+    content: |
+      global
+          log /dev/log local0
+          log /dev/log local1 notice
+          chroot /var/lib/haproxy
+          user haproxy
+          group haproxy
+          daemon
+
+      defaults
+          log     global
+          mode    tcp
+          option  tcplog
+          option  dontlognull
+          timeout connect 5s
+          # Inference responses and uploads can be slow: these are idle
+          # timeouts per direction, not request limits.
+          timeout client  1h
+          timeout server  1h
+          timeout tunnel  1h
+
+      frontend https_in
+          bind *:443
+          mode tcp
+          default_backend envoy_https
+
+      backend envoy_https
+          mode tcp
+          server envoy {{ envoy_svc_clusterip.stdout }}:443 check
+
+      frontend http_in
+          bind *:80
+          mode tcp
+          default_backend envoy_http
+
+      backend envoy_http
+          mode tcp
+          server envoy {{ envoy_svc_clusterip.stdout }}:80 check
+    mode: '0644'
+  notify: Restart HAProxy
+
+- name: Enable and start HAProxy
+  ansible.builtin.service:
+    name: haproxy
+    state: started
+    enabled: true
+
+- name: Apply the HAProxy configuration now
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for the NAI PostgreSQL cluster to be ready
+  ansible.builtin.command: kubectl wait --for=condition=Ready cluster/nai-db-iep -n {{ nai_namespace }} --timeout=600s
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  changed_when: false
+
+- name: Wait for the TLS certificate to be issued
+  ansible.builtin.command: kubectl wait --for=condition=Ready certificate/{{ tls_secret_name }} -n {{ nai_namespace }} --timeout={{ tls_ready_timeout }}
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  when: tls_mode != 'provided'
+  changed_when: false
+
+- name: Wait for the NAI web UI rollout
+  ansible.builtin.command: kubectl rollout status deployment/nai-ui -n {{ nai_namespace }} --timeout=300s
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  changed_when: false
+
+- name: Read the Kubernetes cluster UID (needed for licensing on the Nutanix portal)
+  ansible.builtin.command: kubectl get ns kube-system -o jsonpath='{.metadata.uid}'
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  register: final_cluster_uid
+  changed_when: false
+
+- name: Summary
+  ansible.builtin.debug:
+    msg:
+      - "============================================================================"
+      - "Nutanix Enterprise AI {{ nai_version }} PoC is ready"
+      - "Web console : https://{{ nai_fqdn }}/"
+      - "Login       : admin / Nutanix.123"
+      - "First login : NAI asks for a new password and EULA acceptance"
+      - "TLS         : {{ tls_mode }}{{ ' - browser warning expected, certificate issued by the NAI internal CA' if tls_mode == 'selfsigned' else '' }}"
+      - "SSH         : ssh {{ ansible_user }}@{{ nai_vm_ip }}"
+      - "Cluster UID : {{ final_cluster_uid.stdout }}  (portal.nutanix.com -> Licenses -> Manage NAI)"
+      - "============================================================================"

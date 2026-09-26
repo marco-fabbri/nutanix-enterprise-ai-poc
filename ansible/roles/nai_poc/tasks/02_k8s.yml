@@ -1,0 +1,106 @@
+---
+# =============================================================================
+# 02_k8s.yml - Single-node RKE2 server, kubectl/helm tooling
+# =============================================================================
+
+- name: Create RKE2 config directory
+  ansible.builtin.file:
+    path: /etc/rancher/rke2
+    state: directory
+    mode: '0755'
+
+- name: Write RKE2 server configuration
+  ansible.builtin.copy:
+    dest: /etc/rancher/rke2/config.yaml
+    content: |
+      tls-san:
+        - {{ nai_vm_ip }}
+      {% if nai_fqdn != nai_vm_ip %}
+        - {{ nai_fqdn }}
+      {% endif %}
+      cni: canal
+      disable:
+        - rke2-ingress-nginx
+    mode: '0600'
+  notify: Restart rke2-server
+
+# A pinned release tag is used instead of a release channel: channel
+# resolution depends on update.rke2.io being reachable and returns whatever
+# is current that day, which breaks reproducibility.
+- name: Check the installed RKE2 version
+  ansible.builtin.command: /usr/local/bin/rke2 --version
+  register: rke2_check
+  failed_when: false
+  changed_when: false
+
+- name: Download and install RKE2 server {{ rke2_version }}
+  ansible.builtin.shell: |
+    set -o pipefail
+    curl -sfL https://get.rke2.io | INSTALL_RKE2_VERSION="{{ rke2_version }}" sh -
+  args:
+    executable: /bin/bash
+  when: rke2_check.rc != 0 or rke2_version not in rke2_check.stdout
+  notify: Restart rke2-server
+
+- name: Enable and start rke2-server
+  ansible.builtin.systemd:
+    name: rke2-server.service
+    state: started
+    enabled: true
+
+- name: Restart rke2-server now if its configuration or version changed
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for the Kubernetes API port
+  ansible.builtin.wait_for:
+    port: 6443
+    delay: 10
+    timeout: 300
+
+- name: Create .kube directory for {{ ansible_user }}
+  ansible.builtin.file:
+    path: "/home/{{ ansible_user }}/.kube"
+    state: directory
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: '0700'
+
+- name: Copy kubeconfig to the user's home
+  ansible.builtin.copy:
+    src: "{{ kubeconfig }}"
+    dest: "/home/{{ ansible_user }}/.kube/config"
+    remote_src: true
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: '0600'
+
+- name: Symlink kubectl, crictl and ctr into /usr/local/bin
+  ansible.builtin.file:
+    src: "{{ rke2_bin_dir }}/{{ item }}"
+    dest: "/usr/local/bin/{{ item }}"
+    state: link
+    force: true
+  loop:
+    - kubectl
+    - crictl
+    - ctr
+
+- name: Check installed Helm version
+  ansible.builtin.command: helm version --template '{{ "{{" }}.Version{{ "}}" }}'
+  register: helm_check
+  failed_when: false
+  changed_when: false
+
+- name: Install Helm {{ helm_version }}
+  ansible.builtin.shell: |
+    set -o pipefail
+    curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash -s -- --version "{{ helm_version }}"
+  args:
+    executable: /bin/bash
+  when: helm_check.rc != 0 or helm_check.stdout != helm_version
+
+- name: Wait for the node to become Ready
+  ansible.builtin.command: kubectl wait --for=condition=Ready node --all --timeout=180s
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  changed_when: false

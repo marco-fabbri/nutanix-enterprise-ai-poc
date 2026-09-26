@@ -1,0 +1,102 @@
+---
+# =============================================================================
+# 01_system.yml - Kernel, packages and local NFS export
+# =============================================================================
+
+- name: Check whether cloud-init is present
+  ansible.builtin.stat:
+    path: /usr/bin/cloud-init
+  register: cloud_init_bin
+
+# rc 2 means "done with recoverable errors" on Ubuntu 24.04 and is fine.
+- name: Wait for cloud-init to finish (only when the image uses it)
+  ansible.builtin.command: cloud-init status --wait
+  register: cloud_init_wait
+  changed_when: false
+  failed_when: cloud_init_wait.rc not in [0, 2]
+  timeout: 600
+  when: cloud_init_bin.stat.exists
+
+- name: Disable swap now
+  ansible.builtin.command: swapoff -a
+  changed_when: false
+
+- name: Disable swap permanently in /etc/fstab
+  ansible.builtin.replace:
+    path: /etc/fstab
+    regexp: '^([^#].*\s+swap\s+.*)$'
+    replace: '# \1'
+
+- name: Load kernel modules required by the container runtime and CNI
+  community.general.modprobe:
+    name: "{{ item }}"
+    state: present
+  loop:
+    - overlay
+    - br_netfilter
+
+- name: Persist kernel modules across reboots
+  ansible.builtin.copy:
+    dest: /etc/modules-load.d/k8s.conf
+    content: |
+      overlay
+      br_netfilter
+    mode: '0644'
+
+- name: Configure sysctl parameters for Kubernetes networking
+  ansible.posix.sysctl:
+    name: "{{ item.name }}"
+    value: "{{ item.value }}"
+    state: present
+    reload: true
+    sysctl_file: /etc/sysctl.d/99-kubernetes-cri.conf
+  loop:
+    - { name: 'net.bridge.bridge-nf-call-iptables', value: '1' }
+    - { name: 'net.bridge.bridge-nf-call-ip6tables', value: '1' }
+    - { name: 'net.ipv4.ip_forward', value: '1' }
+    - { name: 'fs.inotify.max_user_watches', value: '524288' }
+    - { name: 'fs.inotify.max_user_instances', value: '8192' }
+
+- name: Install baseline packages
+  ansible.builtin.apt:
+    name:
+      - curl
+      - wget
+      - jq
+      - git
+      - socat
+      - nfs-common
+      - open-iscsi
+      - nfs-kernel-server
+      - ca-certificates
+      - tar
+      - haproxy
+    state: present
+    update_cache: true
+
+- name: Create the NFS export directory backing the RWX StorageClass
+  ansible.builtin.file:
+    path: "{{ nfs_export_path }}"
+    state: directory
+    mode: '0777'
+    owner: nobody
+    group: nogroup
+
+# The only NFS client is this VM itself (the kubelet mounts with the node IP),
+# so the export is restricted to that single address.
+- name: Export the directory to the VM address only
+  ansible.builtin.lineinfile:
+    path: /etc/exports
+    regexp: '^{{ nfs_export_path | regex_escape }}\s'
+    line: '{{ nfs_export_path }} {{ nai_vm_ip }}/32(rw,sync,no_subtree_check,no_root_squash,insecure)'
+    state: present
+  notify: Reload NFS exports
+
+- name: Enable and start nfs-kernel-server
+  ansible.builtin.service:
+    name: nfs-kernel-server
+    state: started
+    enabled: true
+
+- name: Apply NFS exports now (the provisioner in the next phases mounts them)
+  ansible.builtin.meta: flush_handlers

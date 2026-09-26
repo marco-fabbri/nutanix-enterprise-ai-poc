@@ -1,0 +1,33 @@
+# Filled inventory holds credentials
+inventory.ini
+
+# Secrets and key material
+.env
+*.key
+*.pem
+*.pfx
+
+# Ansible local state
+*.retry
+.ansible/
+
+# Vendor documentation is not redistributed
+kb/
+
+# Nutanix charts are covered by the Nutanix EULA and are not redistributed:
+# the preflight downloads them from the official Helm repository.
+charts/nai-core-*.tgz
+charts/nai-operators-*.tgz
+
+# Large image bundles
+*.tar
+nai-airgap-*.tar.gz
+
+# OS / editor / Python
+.DS_Store
+*.log
+__pycache__/
+*.pyc
+
+# Local AI-agent conventions, not part of the project
+AGENTS.md

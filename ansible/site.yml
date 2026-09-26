@@ -1,0 +1,12 @@
+---
+# =============================================================================
+# Nutanix Enterprise AI 2.8 single-node PoC installer
+# Runs against an existing Ubuntu 24.04 VM listed in inventory.ini.
+# =============================================================================
+
+- name: Install Nutanix Enterprise AI PoC on an existing Ubuntu VM
+  hosts: nai_nodes
+  become: true
+  gather_facts: true
+  roles:
+    - role: nai_poc

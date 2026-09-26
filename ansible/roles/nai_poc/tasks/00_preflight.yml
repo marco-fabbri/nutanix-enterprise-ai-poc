@@ -1,0 +1,118 @@
+---
+# =============================================================================
+# 00_preflight.yml - Fail early with a clear message instead of halfway through
+# =============================================================================
+
+- name: Check operating system (Ubuntu 24.04 expected)
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['distribution'] == "Ubuntu"
+      - ansible_facts['distribution_version'] == "24.04"
+    fail_msg: >-
+      This installer expects Ubuntu 24.04 LTS on the target VM, found
+      {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }}.
+      Set nai_skip_os_check=true to continue on an unsupported release.
+  when: not (nai_skip_os_check | bool)
+
+- name: Check architecture
+  ansible.builtin.assert:
+    that: ansible_facts['architecture'] == "x86_64"
+    fail_msg: "NAI 2.8 requires an x86_64 VM, found {{ ansible_facts['architecture'] }}."
+  when: not (nai_skip_os_check | bool)
+
+- name: Check that the VM address is an IPv4 address
+  ansible.builtin.assert:
+    that: nai_vm_ip is match('^\d{1,3}(\.\d{1,3}){3}$')
+    fail_msg: >-
+      nai_vm_ip must be an IPv4 address (got '{{ nai_vm_ip }}'). Set ansible_host
+      to the VM IP, or set nai_vm_ip explicitly. It goes into the NFS export,
+      the TLS certificate SAN and the RKE2 API certificate.
+
+- name: Check tls_mode value
+  ansible.builtin.assert:
+    that: tls_mode in ['selfsigned', 'letsencrypt', 'provided']
+    fail_msg: "tls_mode must be one of selfsigned, letsencrypt, provided (got '{{ tls_mode }}')."
+
+- name: Check registry credentials are set
+  ansible.builtin.assert:
+    that:
+      - docker_username is defined
+      - docker_token is defined
+      - docker_username | string | length > 0
+      - docker_token | string | length > 0
+      - docker_username != 'YOUR_AUTHORIZED_ACCOUNT'
+      - docker_token != 'YOUR_DOCKER_TOKEN'
+    fail_msg: "Set docker_username and docker_token in inventory.ini to your authorized Docker Hub credentials."
+
+- name: Check Let's Encrypt inputs
+  ansible.builtin.assert:
+    that:
+      - nai_fqdn != nai_vm_ip
+      - admin_email != 'admin@example.com'
+    fail_msg: "tls_mode=letsencrypt needs a public nai_fqdn (not the VM IP) and a real admin_email."
+  when: tls_mode == 'letsencrypt'
+
+- name: Check provided certificate files exist on the Ansible controller
+  ansible.builtin.assert:
+    that:
+      - tls_cert_file | length > 0
+      - tls_key_file | length > 0
+      - lookup('ansible.builtin.fileglob', tls_cert_file) | length > 0
+      - lookup('ansible.builtin.fileglob', tls_key_file) | length > 0
+    fail_msg: "tls_mode=provided needs tls_cert_file and tls_key_file pointing to readable PEM files on your computer."
+  when: tls_mode == 'provided'
+
+- name: Download the Nutanix charts from the official Helm release (verified by checksum)
+  ansible.builtin.get_url:
+    url: "{{ nai_chart_download_base }}/{{ item }}-{{ nai_version }}.tgz"
+    dest: "{{ charts_src }}/{{ item }}-{{ nai_version }}.tgz"
+    checksum: "{{ nai_chart_checksums[item] }}"
+    mode: '0644'
+    timeout: 60
+  delegate_to: localhost
+  become: false
+  loop:
+    - nai-core
+    - nai-operators
+
+- name: Check required Helm chart archives exist on the Ansible controller
+  ansible.builtin.stat:
+    path: "{{ charts_src }}/{{ item }}"
+  delegate_to: localhost
+  become: false
+  register: chart_stat
+  loop: "{{ required_chart_files }}"
+
+- name: Fail if any chart archive is missing
+  ansible.builtin.assert:
+    that: chart_stat.results | rejectattr('stat.exists') | list | length == 0
+    fail_msg: >-
+      Missing chart archives in {{ charts_src }}:
+      {{ chart_stat.results | rejectattr('stat.exists') | map(attribute='item') | join(', ') }}
+
+- name: List listeners on ports 80 and 443 (HAProxy will bind them)
+  ansible.builtin.shell: ss -Hltnp '( sport = :80 or sport = :443 )'
+  register: port_listeners
+  changed_when: false
+
+- name: Fail if ports 80 or 443 are taken by something other than HAProxy
+  ansible.builtin.assert:
+    that: port_listeners.stdout_lines | reject('search', 'haproxy') | list | length == 0
+    fail_msg: "Ports 80/443 on the VM are already in use: {{ port_listeners.stdout }}. Use a dedicated VM."
+
+- name: Warn when the VM is below the PoC baseline (16 vCPU / 48 GiB)
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: {{ ansible_facts['processor_vcpus'] }} vCPU and
+      {{ (ansible_facts['memtotal_mb'] / 1024) | round(1) }} GiB RAM detected.
+      The PoC baseline is 16 vCPU and 48 GiB; NAI pods may stay Pending.
+  when: (ansible_facts['processor_vcpus'] | int) < 8 or (ansible_facts['memtotal_mb'] | int) < 32000
+
+- name: Show effective settings
+  ansible.builtin.debug:
+    msg:
+      - "Target VM      : {{ nai_vm_ip }} (user {{ ansible_user }})"
+      - "NAI URL        : https://{{ nai_fqdn }}/"
+      - "TLS mode       : {{ tls_mode }}"
+      - "RKE2 version   : {{ rke2_version }}"
+      - "MinIO          : {{ 'enabled' if deploy_minio | bool else 'disabled' }}"

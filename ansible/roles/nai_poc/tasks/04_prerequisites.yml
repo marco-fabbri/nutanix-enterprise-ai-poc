@@ -1,0 +1,261 @@
+---
+# =============================================================================
+# 04_prerequisites.yml - CRDs and operators NAI depends on
+# =============================================================================
+
+- name: Create the chart directory on the VM
+  ansible.builtin.file:
+    path: "{{ charts_dest }}"
+    state: directory
+    mode: '0755'
+
+- name: Copy vendored Helm charts to the VM
+  ansible.builtin.copy:
+    src: "{{ charts_src }}/"
+    dest: "{{ charts_dest }}/"
+    mode: '0644'
+
+- name: Install Gateway API and Envoy Gateway CRDs
+  ansible.builtin.shell: |
+    set -o pipefail
+    helm template {{ charts_dest }}/gateway-crds-helm-{{ envoy_gateway_chart_version }}.tgz \
+      --set crds.gatewayAPI.enabled=true --set crds.gatewayAPI.channel=experimental \
+      | kubectl apply --server-side --force-conflicts -f -
+  args:
+    executable: /bin/bash
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+
+# As in the NAI 2.8 guide: the Prometheus Operator CRDs plus node-exporter
+# only; Prometheus, Grafana, kube-state-metrics and Alertmanager stay off
+# (NAI ships its own collector).
+- name: Add the prometheus-community Helm repository
+  ansible.builtin.shell: |
+    helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+    helm repo update prometheus-community
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  changed_when: false
+
+- name: Install Prometheus Operator CRDs and node-exporter (kube-prometheus-stack {{ prometheus_stack_chart_version }})
+  ansible.builtin.shell: |
+    helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
+      --version {{ prometheus_stack_chart_version }} \
+      --namespace prometheus --create-namespace --wait --force-conflicts \
+      --set grafana.enabled=false \
+      --set prometheus.enabled=false \
+      --set kubeStateMetrics.enabled=false \
+      --set alertmanager.enabled=false \
+      --set kubernetesServiceMonitors.enabled=false \
+      --set prometheus-node-exporter.kubeRBACProxy.enabled=true
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+
+- name: Create namespaces
+  ansible.builtin.shell: |
+    for ns in {{ nai_namespace }} envoy-gateway-system kserve lws-system opentelemetry; do
+      kubectl create namespace "$ns" --dry-run=client -o yaml | kubectl apply -f -
+    done
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  register: ns_apply
+  changed_when: "'created' in ns_apply.stdout or 'configured' in ns_apply.stdout"
+
+- name: Create the Docker Hub pull secret in every namespace that pulls NAI images
+  no_log: true
+  ansible.builtin.shell: |
+    for ns in {{ nai_namespace }} envoy-gateway-system kserve lws-system opentelemetry default; do
+      kubectl create secret docker-registry {{ registry_secret_name }} \
+        --docker-server=https://index.docker.io/v1/ \
+        --docker-username={{ docker_username | quote }} \
+        --docker-password={{ docker_token | quote }} \
+        --docker-email={{ admin_email | quote }} \
+        -n "$ns" --dry-run=client -o yaml | kubectl apply -f -
+    done
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  register: regcred_apply
+  changed_when: "'created' in regcred_apply.stdout or 'configured' in regcred_apply.stdout"
+
+- name: Add the Jetstack Helm repository
+  ansible.builtin.shell: |
+    helm repo add jetstack https://charts.jetstack.io
+    helm repo update jetstack
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  changed_when: false
+
+- name: Install cert-manager {{ cert_manager_version }} with Gateway API support
+  ansible.builtin.shell: |
+    helm upgrade --install cert-manager jetstack/cert-manager \
+      --namespace cert-manager \
+      --create-namespace \
+      --version {{ cert_manager_version }} \
+      --set crds.enabled=true \
+      --set config.enableGatewayAPI=true \
+      --wait
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+
+- name: Add the CloudNativePG Helm repository
+  ansible.builtin.shell: |
+    helm repo add cnpg https://cloudnative-pg.github.io/charts
+    helm repo update cnpg
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  changed_when: false
+
+- name: Install CloudNativePG operator {{ cnpg_version }}
+  ansible.builtin.shell: |
+    helm upgrade --install cnpg cnpg/cloudnative-pg \
+      --namespace cnpg-system \
+      --create-namespace \
+      --version {{ cnpg_version }} \
+      --wait
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+
+- name: Install LeaderWorkerSet controller
+  ansible.builtin.shell: |
+    helm upgrade --install lws {{ charts_dest }}/lws-{{ lws_chart_version }}.tgz \
+      --namespace lws-system \
+      --create-namespace \
+      --set resources.requests.cpu=100m \
+      --set resources.requests.memory=128Mi \
+      --wait
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+
+- name: Install KServe CRDs
+  ansible.builtin.shell: |
+    set -euo pipefail
+    helm upgrade --install kserve-crd {{ charts_dest }}/kserve-crd-{{ kserve_chart_version }}.tgz -n kserve --create-namespace --wait
+    helm upgrade --install kserve-llmisvc-crd {{ charts_dest }}/kserve-llmisvc-crd-{{ kserve_chart_version }}.tgz -n kserve --create-namespace --wait
+  args:
+    executable: /bin/bash
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+
+# KServe controllers, as required by the NAI 2.8 guide ("Installing KServe"):
+# RawDeployment mode, no ingress objects (Envoy Gateway is the ingress).
+- name: Install the KServe controller
+  ansible.builtin.shell: |
+    helm upgrade --install kserve {{ charts_dest }}/kserve-resources-{{ kserve_chart_version }}.tgz \
+      -n kserve --create-namespace --wait \
+      --set kserve.controller.deploymentMode=RawDeployment \
+      --set kserve.controller.gateway.disableIngressCreation=true
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+
+- name: Install the KServe LLMInferenceService controller
+  ansible.builtin.shell: |
+    helm upgrade --install kserve-llmisvc-resources {{ charts_dest }}/kserve-llmisvc-resources-{{ kserve_chart_version }}.tgz \
+      -n kserve --create-namespace --wait \
+      --set kserve.createSharedResources=false \
+      --set kserve.llmisvc.createGIECRDs=false
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+
+- name: Install OpenTelemetry operator
+  ansible.builtin.shell: |
+    helm upgrade --install opentelemetry-operator {{ charts_dest }}/opentelemetry-operator-{{ otel_operator_chart_version }}.tgz \
+      --namespace opentelemetry \
+      --create-namespace \
+      --wait
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+
+- name: Copy the Envoy Gateway configuration required by NAI
+  ansible.builtin.copy:
+    src: envoy-gateway-config.yaml
+    dest: "{{ charts_dest }}/envoy-gateway-config.yaml"
+    mode: '0644'
+
+- name: Install Envoy Gateway with the NAI extension and rate-limit configuration
+  ansible.builtin.shell: |
+    helm upgrade --install envoy-gateway {{ charts_dest }}/gateway-helm-{{ envoy_gateway_chart_version }}.tgz \
+      --namespace envoy-gateway-system \
+      --create-namespace \
+      --skip-crds \
+      -f {{ charts_dest }}/envoy-gateway-config.yaml \
+      --wait
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+
+# --- Let's Encrypt only ----------------------------------------------------------
+- name: Create the Let's Encrypt ClusterIssuer (HTTP-01 through the NAI Gateway)
+  when: tls_mode == 'letsencrypt'
+  ansible.builtin.command: kubectl apply -f -
+  args:
+    stdin: |
+      apiVersion: cert-manager.io/v1
+      kind: ClusterIssuer
+      metadata:
+        name: letsencrypt-prod
+      spec:
+        acme:
+          server: https://acme-v02.api.letsencrypt.org/directory
+          email: {{ admin_email }}
+          privateKeySecretRef:
+            name: letsencrypt-prod-account-key
+          solvers:
+            - http01:
+                gatewayHTTPRoute:
+                  parentRefs:
+                    - group: gateway.networking.k8s.io
+                      kind: Gateway
+                      name: nai-ingress-gateway
+                      namespace: {{ nai_namespace }}
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  register: le_issuer_apply
+  changed_when: "'created' in le_issuer_apply.stdout or 'configured' in le_issuer_apply.stdout"
+
+# cert-manager's ACME self-check resolves the FQDN from inside the cluster.
+# Mapping it to the VM address in CoreDNS makes the check succeed even when
+# the FQDN resolves to a NAT or edge address from the outside.
+- name: Override CoreDNS so the FQDN resolves to the VM inside the cluster
+  when: tls_mode == 'letsencrypt'
+  ansible.builtin.shell: |
+    cat <<'EOT' | kubectl apply -f -
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: rke2-coredns-rke2-coredns
+      namespace: kube-system
+    data:
+      Corefile: |-
+        .:53 {
+            errors
+            health {
+                lameduck 10s
+            }
+            ready
+            hosts {
+                {{ nai_vm_ip }} {{ nai_fqdn }}
+                fallthrough
+            }
+            kubernetes  cluster.local  in-addr.arpa ip6.arpa {
+                pods insecure
+                fallthrough in-addr.arpa ip6.arpa
+                ttl 30
+            }
+            prometheus  0.0.0.0:9153
+            forward  . /etc/resolv.conf
+            cache  30
+            loop
+            reload
+            loadbalance
+        }
+    EOT
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  register: coredns_apply
+  changed_when: "'created' in coredns_apply.stdout or 'configured' in coredns_apply.stdout"
+
+- name: Restart CoreDNS after the override changed
+  when: tls_mode == 'letsencrypt' and coredns_apply.changed
+  ansible.builtin.command: kubectl rollout restart deployment/rke2-coredns-rke2-coredns -n kube-system
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  changed_when: true

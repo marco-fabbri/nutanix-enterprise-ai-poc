@@ -1,0 +1,23 @@
+---
+# =============================================================================
+# 05_load_bundle.yml - Import an NAI image bundle if one is present on the VM
+# =============================================================================
+
+- name: Check whether an NAI image bundle exists on the VM
+  ansible.builtin.stat:
+    path: "{{ bundle_path_on_host }}"
+  register: bundle_stat
+
+- name: Report the image source
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'Image bundle found at ' + bundle_path_on_host + ': importing into containerd.'
+         if bundle_stat.stat.exists
+         else 'No image bundle at ' + bundle_path_on_host + ': images will be pulled from Docker Hub with the configured credentials.' }}
+
+- name: Import bundle images into the RKE2 containerd
+  ansible.builtin.command: >-
+    {{ rke2_bin_dir }}/ctr --address /run/k3s/containerd/containerd.sock
+    -n k8s.io images import {{ bundle_path_on_host | quote }}
+  when: bundle_stat.stat.exists
+  changed_when: true

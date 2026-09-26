@@ -1,0 +1,98 @@
+---
+# =============================================================================
+# nai_poc role defaults
+#
+# Every value here can be overridden from inventory.ini ([nai_nodes:vars]) or
+# with `-e key=value`. Role defaults are the lowest precedence level in
+# Ansible, which is exactly why user-facing settings live here and not in
+# group_vars: values typed into the INI inventory must always win.
+# =============================================================================
+
+# --- Target VM -----------------------------------------------------------------
+# IPv4 address that clients, the NFS export and the RKE2 API certificate use.
+nai_vm_ip: "{{ ansible_host }}"
+# Hostname or IP that appears in the TLS certificate and the final URL.
+# Defaults to the VM IP so that no DNS record is required.
+nai_fqdn: "{{ nai_vm_ip }}"
+admin_email: admin@example.com
+# Set to true to skip the Ubuntu 24.04 check (unsupported, at your own risk).
+nai_skip_os_check: false
+
+# --- Container registry credentials (required, no default) --------------------
+# docker_username: ...
+# docker_token: ...
+
+# --- TLS -----------------------------------------------------------------------
+# selfsigned  : certificate issued by NAI's internal CA (cert-manager Issuer
+#               "ca-issuer" created by the nai-core chart), SAN = VM IP + FQDN.
+# letsencrypt : ACME HTTP-01 through the Envoy Gateway; needs a public FQDN
+#               and TCP 80/443 reachable from the Internet.
+# provided    : your own certificate chain and key (enterprise CA).
+tls_mode: selfsigned
+tls_cert_file: ""
+tls_key_file: ""
+tls_secret_name: nai-tls-cert
+tls_ready_timeout: 300s
+
+# --- Optional S3 service (MinIO) ------------------------------------------------
+# The upstream minio/minio images were withdrawn from Docker Hub and quay.io in
+# September 2026. The Bitnami legacy build is the last public AGPL MinIO image.
+deploy_minio: true
+minio_image: docker.io/bitnamilegacy/minio:2025.7.23-debian-12-r5
+minio_root_user: minioadmin
+minio_root_password: minioadmin123
+minio_storage_size: 50Gi
+minio_namespace: minio-system
+
+# --- Optional air-gap image bundle already present on the VM --------------------
+bundle_path_on_host: /opt/nai/nai-v2.8.0.tar
+
+# --- Pinned versions (change only deliberately) -------------------------------
+nai_version: 2.8.0
+# Explicit RKE2 release tag. The RKE2 release channel service (update.rke2.io)
+# is not relied upon so that installs stay reproducible.
+rke2_version: v1.35.8+rke2r1
+helm_version: v4.0.5
+cert_manager_version: v1.19.3
+cnpg_version: 0.28.0
+local_path_provisioner_version: v0.0.28
+nfs_provisioner_chart_version: 4.0.18
+prometheus_stack_chart_version: 82.13.6
+envoy_gateway_chart_version: v1.8.1
+kserve_chart_version: v0.19.0
+lws_chart_version: 0.8.0
+otel_operator_chart_version: 0.114.1
+
+# --- Paths -------------------------------------------------------------------------
+charts_src: "{{ playbook_dir }}/../charts"
+charts_dest: /opt/nai-charts
+kubeconfig: /etc/rancher/rke2/rke2.yaml
+rke2_bin_dir: /var/lib/rancher/rke2/bin
+nfs_export_path: /srv/nfs/nai-shared
+
+# --- Kubernetes objects --------------------------------------------------------
+nai_namespace: nai-system
+storage_class_rwo: local-path
+storage_class_rwx: nai-nfs-storage
+registry_secret_name: nai-regcred
+
+# The two Nutanix charts are covered by the Nutanix EULA and are not part of
+# this repository. The preflight downloads them from the official Nutanix
+# Helm release (https://nutanix.github.io/helm-releases) into charts/ and
+# verifies their SHA-256 against the values published in that repository's
+# index.yaml.
+nai_chart_download_base: "https://github.com/nutanix/helm-releases/releases/download/nai_{{ nai_version }}"
+nai_chart_checksums:
+  nai-core: "sha256:9c159141379903a422b34fbcc981ed531d37630b9cd4e4bf51ba5a9ac492c435"
+  nai-operators: "sha256:ad446dde306cd7aa2ae1234dd01f63041e68366474fdc6486e49fd4a1d9a070b"
+
+# Chart archives vendored in charts/ (all Apache 2.0 upstream projects).
+required_chart_files:
+  - "gateway-crds-helm-{{ envoy_gateway_chart_version }}.tgz"
+  - "gateway-helm-{{ envoy_gateway_chart_version }}.tgz"
+  - "kserve-crd-{{ kserve_chart_version }}.tgz"
+  - "kserve-llmisvc-crd-{{ kserve_chart_version }}.tgz"
+  - "kserve-resources-{{ kserve_chart_version }}.tgz"
+  - "kserve-llmisvc-resources-{{ kserve_chart_version }}.tgz"
+  - "lws-{{ lws_chart_version }}.tgz"
+  - "opentelemetry-operator-{{ otel_operator_chart_version }}.tgz"
