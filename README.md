@@ -240,6 +240,43 @@ Re-run any phase with tags: `preflight`, `system`, `k8s`, `storage`,
 The [runbook](docs/RUNBOOK.md) has the component details, credentials,
 kubectl cheat sheet and troubleshooting notes.
 
+## Trying a CPU inference endpoint
+
+NAI 2.8 can serve small models on CPU, which is enough to exercise the whole
+flow on this VM (tested with the setup below; the VM must expose AVX-512, see
+the requirements table).
+
+1. Put an open model on the VM's NFS share, for example
+   `Qwen/Qwen2.5-0.5B-Instruct` (about 1 GB, no Hugging Face token needed):
+
+   ```bash
+   sudo mkdir -p /srv/nfs/nai-shared/models/qwen2.5-0.5b-instruct && cd $_
+   for f in config.json generation_config.json merges.txt model.safetensors tokenizer.json tokenizer_config.json vocab.json; do
+     sudo curl -sSL -o "$f" "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/resolve/main/$f"
+   done
+   ```
+
+2. In the console: **Models → Import Models → Using Manual Import**, Custom
+   Model, capability Text Generation, type LLM, size 2 GiB, Location **File
+   Share** with server `<VM_IP>`, export `/srv/nfs/nai-shared`, directory
+   `models/qwen2.5-0.5b-instruct`. Wait for **Ready**.
+3. **Local Endpoints → Create Endpoint**: Real Time, that model, Acceleration
+   Type **CPU**, **3 vCPU** and **12 GiB** (NAI runs vLLM in float32 with a
+   4 GiB KV cache; 8 GiB gets OOM-killed, and 4 vCPU does not fit next to the
+   NAI control plane on a 16-vCPU node), context 4096, one instance, an API
+   key, engine vLLM. **Active** after about two minutes.
+4. Call it through the NAI gateway (the model name is the endpoint name):
+
+   ```bash
+   curl -s https://<VM_IP_OR_FQDN>/enterpriseai/v1/chat/completions \
+     -H "Authorization: Bearer <API_KEY>" -H "Content-Type: application/json" \
+     -d '{"model":"qwen-cpu","messages":[{"role":"user","content":"Hello"}],"max_tokens":60}'
+   ```
+
+The first request takes about a minute (CPU kernel warm-up); afterwards a
+0.5B model answers at a few tokens per second, enough for a demo, not for
+users.
+
 ## Pinned versions and why
 
 | Component | Version | Note |
