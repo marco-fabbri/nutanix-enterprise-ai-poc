@@ -20,6 +20,7 @@
     set -o pipefail
     helm template {{ charts_dest }}/gateway-crds-helm-{{ envoy_gateway_chart_version }}.tgz \
       --set crds.gatewayAPI.enabled=true --set crds.gatewayAPI.channel=experimental \
+      --set crds.envoyGateway.enabled=true \
       | kubectl apply --server-side --force-conflicts -f -
   args:
     executable: /bin/bash
