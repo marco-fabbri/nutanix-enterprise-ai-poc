@@ -72,10 +72,23 @@
   register: le_cert_apply
   changed_when: "'created' in le_cert_apply.stdout or 'configured' in le_cert_apply.stdout"
 
+# The nai-operators pre-upgrade hook scales down nai-iep-model-controller, a
+# deployment that nai-core creates. When it does not exist yet (first install,
+# or a re-run after a failed nai-core install) the hook fails, so hooks are
+# skipped in that case only.
+- name: Check whether the NAI model controller exists (decides if operator hooks can run)
+  ansible.builtin.command: kubectl -n {{ nai_namespace }} get deployment nai-iep-model-controller
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  register: model_controller
+  failed_when: false
+  changed_when: false
+
 - name: Deploy NAI operators
   ansible.builtin.shell: |
     helm upgrade --install nai-operators {{ charts_dest }}/nai-operators-{{ nai_version }}.tgz \
       --namespace {{ nai_namespace }} \
+      {{ '--no-hooks' if model_controller.rc != 0 else '' }} \
       --set global.storage.storageClassName={{ storage_class_rwo }} \
       --set global.storage.storageClassNameRWX={{ storage_class_rwx }} \
       --set "global.imagePullSecrets[0].name={{ registry_secret_name }}" \
