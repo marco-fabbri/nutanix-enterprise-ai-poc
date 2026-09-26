@@ -62,11 +62,37 @@
     fail_msg: "tls_mode=provided needs tls_cert_file and tls_key_file pointing to readable PEM files on your computer."
   when: tls_mode == 'provided'
 
-- name: Download the Nutanix charts from the official Helm release (verified by checksum)
+- name: Read the index of the official Nutanix Helm repository
+  ansible.builtin.uri:
+    url: "{{ nai_helm_repo_url }}/index.yaml"
+    return_content: true
+    timeout: 60
+  delegate_to: localhost
+  become: false
+  register: nai_helm_index
+
+- name: Resolve download URL and digest of the NAI {{ nai_version }} charts
+  ansible.builtin.set_fact:
+    nai_charts_resolved: >-
+      {{ (nai_charts_resolved | default({})) | combine({item:
+           ((nai_helm_index.content | from_yaml).entries[item] | default([]))
+           | selectattr('version', 'equalto', nai_version) | list | first | default({})}) }}
+  loop:
+    - nai-core
+    - nai-operators
+
+- name: Fail if the NAI charts are not published for this version
+  ansible.builtin.assert:
+    that:
+      - nai_charts_resolved['nai-core'].urls is defined
+      - nai_charts_resolved['nai-operators'].urls is defined
+    fail_msg: "NAI charts version {{ nai_version }} not found in {{ nai_helm_repo_url }}/index.yaml"
+
+- name: Download the NAI charts and verify their SHA-256 against the index
   ansible.builtin.get_url:
-    url: "{{ nai_chart_download_base }}/{{ item }}-{{ nai_version }}.tgz"
+    url: "{{ nai_charts_resolved[item].urls[0] }}"
     dest: "{{ charts_src }}/{{ item }}-{{ nai_version }}.tgz"
-    checksum: "{{ nai_chart_checksums[item] }}"
+    checksum: "sha256:{{ nai_chart_checksums[item] | default(nai_charts_resolved[item].digest) }}"
     mode: '0644'
     timeout: 60
   delegate_to: localhost

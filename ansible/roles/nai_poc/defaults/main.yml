@@ -77,14 +77,16 @@ storage_class_rwx: nai-nfs-storage
 registry_secret_name: nai-regcred
 
 # The two Nutanix charts are covered by the Nutanix EULA and are not part of
-# this repository. The preflight downloads them from the official Nutanix
-# Helm release (https://nutanix.github.io/helm-releases) into charts/ and
-# verifies their SHA-256 against the values published in that repository's
-# index.yaml.
-nai_chart_download_base: "https://github.com/nutanix/helm-releases/releases/download/nai_{{ nai_version }}"
-nai_chart_checksums:
-  nai-core: "sha256:9c159141379903a422b34fbcc981ed531d37630b9cd4e4bf51ba5a9ac492c435"
-  nai-operators: "sha256:ad446dde306cd7aa2ae1234dd01f63041e68366474fdc6486e49fd4a1d9a070b"
+# this repository. The preflight reads index.yaml of the official Nutanix Helm
+# repository (what `helm repo add ntnx-charts ...` reads), takes the download
+# URL and SHA-256 digest published there for nai_version, downloads the
+# archives into charts/ and verifies them. To pin the digests independently
+# of the index, set nai_chart_checksums, e.g.
+#   nai_chart_checksums:
+#     nai-core: 9c159141379903a422b34fbcc981ed531d37630b9cd4e4bf51ba5a9ac492c435
+#     nai-operators: ad446dde306cd7aa2ae1234dd01f63041e68366474fdc6486e49fd4a1d9a070b
+nai_helm_repo_url: "https://nutanix.github.io/helm-releases"
+nai_chart_checksums: {}
 
 # Chart archives vendored in charts/ (all Apache 2.0 upstream projects).
 required_chart_files:

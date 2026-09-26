@@ -7,19 +7,26 @@
 # terminated by Envoy with the NAI certificate.
 # =============================================================================
 
-- name: Wait for the Envoy Gateway service and read its ClusterIP
+- name: Wait for the Envoy Gateway service and read its name
   ansible.builtin.shell: |
     for i in $(seq 1 60); do
-      svc_ip=$(kubectl get svc -n envoy-gateway-system -l gateway.envoyproxy.io/owning-gateway-name=nai-ingress-gateway -o jsonpath='{.items[0].spec.clusterIP}' 2>/dev/null || true)
-      if [ -n "$svc_ip" ]; then
-        echo "$svc_ip"
+      svc=$(kubectl get svc -n envoy-gateway-system -l gateway.envoyproxy.io/owning-gateway-name=nai-ingress-gateway -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+      if [ -n "$svc" ]; then
+        echo "$svc"
         exit 0
       fi
       sleep 5
     done
     echo "Timeout waiting for the Envoy Gateway service" >&2
     exit 1
-  register: envoy_svc_clusterip
+  register: envoy_svc_name
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  changed_when: false
+
+- name: Read the cluster DNS address (CoreDNS service)
+  ansible.builtin.command: kubectl -n kube-system get svc rke2-coredns-rke2-coredns -o jsonpath={.spec.clusterIP}
+  register: coredns_ip
   environment:
     KUBECONFIG: "{{ kubeconfig }}"
   changed_when: false
@@ -35,6 +42,7 @@
           user haproxy
           group haproxy
           daemon
+          stats socket /run/haproxy/admin.sock mode 660 level admin
 
       defaults
           log     global
@@ -48,6 +56,16 @@
           timeout server  1h
           timeout tunnel  1h
 
+      # The Envoy Gateway service is resolved through the cluster DNS, so the
+      # backend follows the service even if it is recreated with a new IP.
+      resolvers cluster
+          nameserver coredns {{ coredns_ip.stdout }}:53
+          resolve_retries 3
+          timeout resolve 1s
+          timeout retry   1s
+          hold valid      10s
+          hold nx         5s
+
       frontend https_in
           bind *:443
           mode tcp
@@ -55,7 +73,7 @@
 
       backend envoy_https
           mode tcp
-          server envoy {{ envoy_svc_clusterip.stdout }}:443 check
+          server envoy {{ envoy_svc_name.stdout }}.envoy-gateway-system.svc.cluster.local:443 check resolvers cluster resolve-prefer ipv4 init-addr last,libc,none
 
       frontend http_in
           bind *:80
@@ -64,7 +82,7 @@
 
       backend envoy_http
           mode tcp
-          server envoy {{ envoy_svc_clusterip.stdout }}:80 check
+          server envoy {{ envoy_svc_name.stdout }}.envoy-gateway-system.svc.cluster.local:80 check resolvers cluster resolve-prefer ipv4 init-addr last,libc,none
     mode: '0644'
   notify: Restart HAProxy
 

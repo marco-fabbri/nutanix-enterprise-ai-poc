@@ -46,8 +46,9 @@ flowchart TD
 ```
 
 Everything runs on the one VM. The Envoy Gateway service has no cloud load
-balancer, so HAProxy on the VM forwards TCP 80 and 443 to it; TLS is still
-terminated by Envoy with the NAI certificate. Persistent data stays on the VM
+balancer, so HAProxy on the VM forwards TCP 80 and 443 to it, resolving the
+service through the cluster DNS so it follows the service even if it is
+recreated; TLS is still terminated by Envoy with the NAI certificate. Persistent data stays on the VM
 disk through local-path (RWO) and a local NFS export (RWX). MinIO is an
 optional S3 service for importing models from a bucket, in place of Nutanix
 Objects.
@@ -143,9 +144,12 @@ operator). They are vendored for reproducibility; the preflight fails if any
 is missing.
 
 The two NAI charts (`nai-core` and `nai-operators` 2.8.0) are covered by the
-Nutanix EULA and are **not part of this repository**. The preflight downloads
-them into `charts/` from the official Nutanix Helm release and verifies their
-SHA-256 against the checksums published in that repository's index. Nothing
+Nutanix EULA and are **not part of this repository**. The preflight reads the
+index of the official Nutanix Helm repository (the same `index.yaml` that
+`helm repo add ntnx-charts https://nutanix.github.io/helm-releases` uses),
+downloads the archives for the pinned `nai_version` into `charts/` and
+verifies their SHA-256 against the digests published in that index. Set
+`nai_chart_checksums` in the inventory to pin the digests yourself. Nothing
 else to do on your side.
 
 If you already have an NAI image bundle, copy it to the VM and point
