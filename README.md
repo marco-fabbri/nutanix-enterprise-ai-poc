@@ -58,7 +58,7 @@ Objects.
 | Requirement | PoC baseline |
 |---|---|
 | Operating system | Ubuntu Server 24.04 LTS, x86-64 (the installer refuses anything else unless `nai_skip_os_check=true`) |
-| CPU / memory | 16 vCPU, 48 GiB dedicated RAM, no memory overcommit |
+| CPU / memory | 16 vCPU, 48 GiB dedicated RAM, no memory overcommit. For CPU inference endpoints the VM must see the real CPU flags (AVX2 and AVX-512): on KVM/Proxmox use CPU type `host`, not a generic model such as `x86-64-v2` |
 | Disk | 150 GiB SSD on the root filesystem |
 | Network | Static IPv4, outbound Internet access, ports 80 and 443 free |
 | Access | An account with SSH key login and passwordless sudo |
@@ -261,7 +261,9 @@ All versions live in `ansible/roles/nai_poc/defaults/main.yml`.
 
 ## Limitations
 
-- Single node, no high availability, no GPU workers.
+- Single node, no high availability, no GPU workers. CPU inference endpoints
+  work with small models (tested: a 0.5B instruct model at about 11 tokens/s
+  on 4 cores) when the VM exposes AVX-512.
 - Internet access from the VM is required for RKE2, Helm and several charts.
 - The RWX storage is a local NFS export on the same disk, not Nutanix Files.
 - SSH host key checking is disabled in `ansible/ansible.cfg` for lab

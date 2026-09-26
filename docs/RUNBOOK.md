@@ -217,6 +217,7 @@ Re-running phases from your computer:
 | `nai-operators` or `nai-core` Helm timeout | `kubectl -n nai-system get pods`; `ImagePullBackOff` means wrong Docker Hub credentials (secret `nai-regcred`), `Pending` usually means the VM is under the memory baseline. |
 | `certificate/nai-tls-cert` never Ready | `kubectl -n nai-system describe certificate nai-tls-cert`. In `letsencrypt` mode also check `kubectl -n nai-system get challenges`, DNS and the 80/443 forwarding. |
 | Console unreachable on 443 | `sudo systemctl status haproxy` and `echo "show servers state" \| sudo socat stdio /run/haproxy/admin.sock` are the first checks; if the Envoy service was renamed, `./deploy.sh install --tags ingress`. |
+| A CPU inference endpoint pod restarts with `died with <Signals.SIGILL: 4>` in the vLLM log | The VM's virtual CPU hides AVX2/AVX-512 (`grep avx512 /proc/cpuinfo` is empty). Set the hypervisor CPU model to `host` (Proxmox: `qm set <id> --cpu host`, then a full stop/start) so the vLLM CPU build can run. |
 | MinIO pod `ImagePullBackOff` | The image is pinned to a Bitnami legacy tag; verify it is still published or set `deploy_minio=false`. |
 | `helm upgrade` of nai-core fails with `conflict occurred while applying object ... EnvoyProxy ... conflicts with "kubectl-patch"` | The EnvoyProxy was edited with `kubectl patch` outside Helm. Run the nai-core `helm upgrade` command from `ansible/roles/nai_poc/tasks/06_deploy_nai.yml` once by hand adding `--force-conflicts` so Helm takes the fields back, then re-run the playbook. |
 
