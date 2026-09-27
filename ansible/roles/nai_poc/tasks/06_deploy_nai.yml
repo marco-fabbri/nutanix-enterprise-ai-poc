@@ -119,6 +119,7 @@
       --set gateway.tlsSecretName={{ tls_secret_name }} \
       --set gateway.envoyResources.requests.cpu=500m \
       --set gateway.envoyResources.requests.memory=1Gi \
+      --set naiLabs.enabled={{ deploy_nai_labs | bool | lower }} \
       --timeout 20m \
       --force-conflicts \
       --wait

@@ -275,7 +275,14 @@ the requirements table).
 
 The first request takes about a minute (CPU kernel warm-up); afterwards a
 0.5B model answers at a few tokens per second, enough for a demo, not for
-users.
+users. On a CPU with AVX-512 BF16 you can add `--dtype bfloat16` under
+"Show Advanced Engine Configuration → Custom Arguments" when creating the
+endpoint (it is the product's own example there): about 50% faster and less
+memory in our test.
+
+To chat with the endpoint from the console, set `deploy_nai_labs=true` in the
+inventory and re-run `./deploy.sh install --tags nai`: NAI Labs (a preview
+feature) adds a Chat application that talks to your endpoints.
 
 ## Pinned versions and why
 

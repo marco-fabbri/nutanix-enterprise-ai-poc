@@ -44,6 +44,11 @@ minio_root_password: minioadmin123
 minio_storage_size: 50Gi
 minio_namespace: minio-system
 
+# --- NAI Labs (Chat / Talk To My Data / Agent apps, preview) ----------------------
+# Lets you try an endpoint from the console. Off by default as in the chart;
+# needs about 0.5 vCPU and 2 GiB more on the node.
+deploy_nai_labs: false
+
 # --- Optional air-gap image bundle already present on the VM --------------------
 bundle_path_on_host: /opt/nai/nai-v2.8.0.tar
 
