@@ -17,6 +17,12 @@ nai_fqdn: "{{ nai_vm_ip }}"
 admin_email: admin@example.com
 # Set to true to skip the Ubuntu 24.04 check (unsupported, at your own risk).
 nai_skip_os_check: false
+# Hard minimums checked by the preflight: the NAI control plane alone reserves
+# about 12 vCPU, so smaller VMs fail 20 minutes into the nai-core install.
+# Set nai_skip_sizing_check=true to try anyway on a smaller VM.
+nai_min_vcpu: 16
+nai_min_memory_mb: 45000
+nai_skip_sizing_check: false
 
 # --- Container registry credentials (required, no default) --------------------
 # docker_username: ...

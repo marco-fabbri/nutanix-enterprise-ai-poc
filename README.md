@@ -58,7 +58,7 @@ Objects.
 | Requirement | PoC baseline |
 |---|---|
 | Operating system | Ubuntu Server 24.04 LTS, x86-64 (the installer refuses anything else unless `nai_skip_os_check=true`) |
-| CPU / memory | 16 vCPU, 48 GiB dedicated RAM, no memory overcommit. For CPU inference endpoints the VM must see the real CPU flags (AVX2 and AVX-512): on KVM/Proxmox use CPU type `host`, not a generic model such as `x86-64-v2` |
+| CPU / memory | 16 vCPU, 48 GiB dedicated RAM, no memory overcommit (the preflight stops below this; `nai_skip_sizing_check=true` overrides it). For CPU inference endpoints the VM must see the real CPU flags (AVX2 and AVX-512): on KVM/Proxmox use CPU type `host`, not a generic model such as `x86-64-v2` |
 | Disk | 150 GiB SSD on the root filesystem |
 | Network | Static IPv4, outbound Internet access, ports 80 and 443 free |
 | Access | An account with SSH key login and passwordless sudo |

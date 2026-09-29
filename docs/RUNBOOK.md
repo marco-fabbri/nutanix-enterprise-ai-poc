@@ -213,6 +213,7 @@ Re-running phases from your computer:
 | Symptom | Where to look |
 |---|---|
 | Preflight fails on OS, credentials, charts or ports | The message names the missing input. `nai_skip_os_check=true` bypasses the Ubuntu 24.04 and x86-64 checks only. |
+| `nai-core` fails after 20 minutes with `resource not ready, name: nai-api` | Almost always the VM is below the baseline (nai-api stays `Pending` for CPU or memory) or ClickHouse cannot start (virtual CPU without SSE4.2). The preflight now checks both; `kubectl -n nai-system logs <nai-api pod> -c nai-api-prechecks` shows what nai-api is waiting for. |
 | RKE2 install fails to download | The VM needs outbound HTTPS to `get.rke2.io`, `github.com`, `raw.githubusercontent.com`, `get.helm.sh`, `charts.jetstack.io`, `cloudnative-pg.github.io`, `kubernetes-sigs.github.io`, `prometheus-community.github.io`, `index.docker.io`, `registry.k8s.io`, `quay.io` and `ghcr.io`. The pinned tag avoids the release-channel service entirely. |
 | `nai-operators` or `nai-core` Helm timeout | `kubectl -n nai-system get pods`; `ImagePullBackOff` means wrong Docker Hub credentials (secret `nai-regcred`), `Pending` usually means the VM is under the memory baseline. |
 | `certificate/nai-tls-cert` never Ready | `kubectl -n nai-system describe certificate nai-tls-cert`. In `letsencrypt` mode also check `kubectl -n nai-system get challenges`, DNS and the 80/443 forwarding. |

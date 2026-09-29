@@ -126,13 +126,38 @@
     that: port_listeners.stdout_lines | reject('search', 'haproxy') | list | length == 0
     fail_msg: "Ports 80/443 on the VM are already in use: {{ port_listeners.stdout }}. Use a dedicated VM."
 
-- name: Warn when the VM is below the PoC baseline (16 vCPU / 48 GiB)
-  ansible.builtin.debug:
-    msg: >-
-      WARNING: {{ ansible_facts['processor_vcpus'] }} vCPU and
-      {{ (ansible_facts['memtotal_mb'] / 1024) | round(1) }} GiB RAM detected.
-      The PoC baseline is 16 vCPU and 48 GiB; NAI pods may stay Pending.
-  when: (ansible_facts['processor_vcpus'] | int) < 8 or (ansible_facts['memtotal_mb'] | int) < 32000
+- name: Check the VM size (PoC baseline 16 vCPU / 48 GiB)
+  ansible.builtin.assert:
+    that:
+      - (ansible_facts['processor_vcpus'] | int) >= (nai_min_vcpu | int)
+      - (ansible_facts['memtotal_mb'] | int) >= (nai_min_memory_mb | int)
+    fail_msg: >-
+      The VM has {{ ansible_facts['processor_vcpus'] }} vCPU and
+      {{ (ansible_facts['memtotal_mb'] / 1024) | round(1) }} GiB RAM visible; the PoC baseline
+      is 16 vCPU and 48 GiB (the NAI control plane alone reserves about 12 vCPU).
+      Add resources, or set
+      nai_skip_sizing_check=true to try anyway (NAI pods will likely stay Pending).
+    quiet: true
+  when: not (nai_skip_sizing_check | bool)
+
+# ClickHouse (NAI metrics store) needs SSE4.2; without it nai-api waits
+# forever. Generic virtual CPU models such as kvm64/qemu64 hide it.
+- name: Read the CPU instruction set flags
+  ansible.builtin.command: grep -m1 -o -w -E 'sse4_2|avx2|avx512f' /proc/cpuinfo
+  register: cpu_flags
+  failed_when: false
+  changed_when: false
+  when: not (nai_skip_os_check | bool)
+
+- name: Check that the virtual CPU exposes SSE4.2
+  ansible.builtin.assert:
+    that: "'sse4_2' in cpu_flags.stdout"
+    fail_msg: >-
+      The VM CPU does not expose SSE4.2, required by ClickHouse inside NAI. On
+      KVM/Proxmox set the VM CPU type to "host" (or at least x86-64-v2) and do a
+      full stop/start of the VM.
+    quiet: true
+  when: not (nai_skip_os_check | bool)
 
 - name: Show effective settings
   ansible.builtin.debug:
